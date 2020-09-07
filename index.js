@@ -1,3 +1,4 @@
+//const dotenv = require('dotenv').config();
 const axios = require('axios');
 const AWS = require('aws-sdk');
 AWS.config.update({ region: process.env.AWS_REG });
@@ -7,36 +8,37 @@ const bucketParams = {
   Key: process.env.S3_KEY
 };
 
-module.exports.handler = async (event) => {
-  let mangas = await readMangasFile();
-  mangas = JSON.parse(mangas);
+module.exports.handler = async () => {
+  let mangaList = await getS3MangaList();
+  mangaList = JSON.parse(mangaList);
 
-  const newChapters = await getNewChapters(mangas);
+  const newChapters = await getNewChapters(mangaList);
 
   if (Object.keys(newChapters).length !== 0) {
-    updateMangasFile(mangas, newChapters);
+    await updateS3MangaList(mangaList, newChapters);
     const content = createEmailContent(newChapters);
-    await sendSES(content);
+    await sendSNS(content);
   }
-
+  
   return newChapters;
 }
 
-const readMangasFile = async () => {
+const getS3MangaList = async () => {
   const file = await s3.getObject(bucketParams).promise();
   return file.Body.toString();
-}
+};
 
-const updateMangasFile = async (mangas, newChapters) => {
+const updateS3MangaList = async (mangas, newChapters) => {
   for (const title in newChapters) {
     mangas[title] = newChapters[title];
   }
 
   await s3.putObject({
-    ...bucketParams,
-    Body: JSON.stringify(mangas)
-  }).promise();
-}
+      ...bucketParams,
+      Body: JSON.stringify(mangas),
+    })
+    .promise();
+};
 
 const getNewChapters = async (mangas) => {
   let newChapters = {};
@@ -79,52 +81,27 @@ const createEmailContent = (newChapters) => {
   let content = '';
 
   for (const title in newChapters) {
-    content = `${content}<p>${newChapters[title].lastChapterUrl}</p>`;
+    content = `${content}${newChapters[title].lastChapterUrl}   `;
   }
 
   return content;
 }
 
-const sendSES = async (content) => {
-  const sender = process.env.EMAIL_FROM;
-  const recipient = process.env.EMAIL_TO;
+const sendSNS = async (content) => {
+    const params = {
+        Message: content,
+        TopicArn: process.env.SNS_MANGA
+    };
 
-  const subject = "New manga chapter";
+    const sns = new AWS.SNS({ apiVersion: '2010-03-31' });
 
-  const charset = "UTF-8";
-
-  const ses = new AWS.SES();
-
-  const params = {
-    Source: sender,
-    Destination: {
-      ToAddresses: [
-        recipient
-      ],
-    },
-    Message: {
-      Subject: {
-        Data: subject,
-        Charset: charset
-      },
-      Body: {
-        Text: {
-          Data: 'Chapter links',
-          Charset: charset
-        },
-        Html: {
-          Data: content,
-          Charset: charset
+    sns.publish(params, function (err) {
+        if (err) {
+            console.log(err.message);
+        } else {
+            console.log("Email sent!");
         }
-      }
-    }
-  };
-
-  ses.sendEmail(params, function (err, data) {
-    if (err) {
-      console.log(err.message);
-    } else {
-      console.log("Email sent! Message ID: ", data.MessageId);
-    }
-  });
+    });
 }
+
+this.handler()
